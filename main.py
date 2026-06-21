@@ -12,12 +12,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
+from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
 
@@ -35,6 +37,8 @@ class Article:
     score: int = 0
     comments: int = 0
     published_at: int | None = None
+    summary: str = ""
+    has_score: bool = False
     matched: bool = True
 
 
@@ -85,7 +89,7 @@ def mark_sent(conn: sqlite3.Connection, articles: Iterable[Article], now: dateti
 
 
 def keyword_score(article: Article, keywords: list[str]) -> int:
-    text = f"{article.title} {article.url}".lower()
+    text = f"{article.title} {article.url} {article.summary}".lower()
     return sum(1 for keyword in keywords if keyword_matches(text, keyword))
 
 
@@ -104,13 +108,28 @@ def is_relevant(article: Article, config: dict) -> bool:
     min_score = int(config["filters"].get("min_score", 0))
     keywords = config["filters"].get("keywords", [])
 
-    if article.score < min_score:
+    if article.has_score and article.score < min_score:
         return False
 
     if not keywords:
         return True
 
     return keyword_score(article, keywords) > 0
+
+
+def fetch_all_articles(config: dict) -> list[Article]:
+    articles: list[Article] = []
+
+    for label, fetcher in (
+        ("Hacker News", fetch_hacker_news),
+        ("feeds", fetch_feeds),
+    ):
+        try:
+            articles.extend(fetcher(config))
+        except RuntimeError as exc:
+            print(f"Skip {label}: {exc}")
+
+    return dedupe_articles(articles)
 
 
 def fetch_hacker_news(config: dict) -> list[Article]:
@@ -177,6 +196,7 @@ def fetch_hacker_news_api(config: dict) -> list[Article]:
                 score=int(item.get("score", 0)),
                 comments=int(item.get("descendants", 0)),
                 published_at=item.get("time"),
+                has_score=True,
             )
         )
 
@@ -213,6 +233,7 @@ def fetch_hacker_news_algolia(config: dict) -> list[Article]:
                 score=as_int(hit.get("points")),
                 comments=as_int(hit.get("num_comments")),
                 published_at=as_int(hit.get("created_at_i")) or None,
+                has_score=True,
             )
         )
 
@@ -314,10 +335,178 @@ def fetch_hacker_news_html(config: dict) -> list[Article]:
                 discussion_url=discussion_url,
                 score=int(item.get("score", 0)),
                 comments=int(item.get("comments", 0)),
+                has_score=True,
             )
         )
 
     return articles
+
+
+def fetch_feeds(config: dict) -> list[Article]:
+    feed_config = config.get("feeds", {})
+    if not feed_config.get("enabled", False):
+        return []
+
+    timeout = int(feed_config.get("timeout", 12))
+    retries = int(feed_config.get("retries", 1))
+    per_feed_limit = int(feed_config.get("per_feed_limit", 6))
+    articles: list[Article] = []
+
+    for source in feed_config.get("sources", []):
+        if not source.get("enabled", True):
+            continue
+
+        name = str(source.get("name", "")).strip()
+        url = str(source.get("url", "")).strip()
+        if not name or not url:
+            continue
+
+        try:
+            feed_text = get_text(url, config=config, timeout=timeout, accept="application/rss+xml, application/atom+xml, application/xml, text/xml", retries=retries)
+            parsed = parse_feed(feed_text, source=name, limit=per_feed_limit)
+            articles.extend(parsed)
+        except RuntimeError as exc:
+            print(f"Skip feed {name}: {exc}")
+
+    return articles
+
+
+def parse_feed(feed_text: str, source: str, limit: int) -> list[Article]:
+    try:
+        root = ET.fromstring(feed_text)
+    except ET.ParseError as exc:
+        raise RuntimeError(f"invalid XML: {exc}") from exc
+
+    entries = find_feed_entries(root)
+    articles: list[Article] = []
+    for entry in entries[:limit]:
+        title = clean_text(first_child_text(entry, "title"))
+        url = extract_feed_link(entry)
+        if not title or not url:
+            continue
+
+        summary = clean_summary(
+            first_child_text(entry, "summary", "description", "content", "encoded")
+        )
+        published_at = parse_feed_timestamp(
+            first_child_text(entry, "published", "updated", "pubDate", "date")
+        )
+
+        articles.append(
+            Article(
+                source=source,
+                title=title,
+                url=url,
+                discussion_url=url,
+                published_at=published_at,
+                summary=summary,
+            )
+        )
+
+    return articles
+
+
+def find_feed_entries(root: ET.Element) -> list[ET.Element]:
+    root_name = local_name(root.tag)
+    if root_name == "feed":
+        return [child for child in list(root) if local_name(child.tag) == "entry"]
+
+    if root_name == "rss":
+        channel = first_child(root, "channel")
+        if channel is not None:
+            return [child for child in list(channel) if local_name(child.tag) == "item"]
+
+    if root_name == "rdf":
+        return [child for child in list(root) if local_name(child.tag) == "item"]
+
+    return [child for child in root.iter() if local_name(child.tag) in {"entry", "item"}]
+
+
+def first_child(element: ET.Element, *names: str) -> ET.Element | None:
+    wanted = {name.lower() for name in names}
+    for child in list(element):
+        if local_name(child.tag) in wanted:
+            return child
+    return None
+
+
+def first_child_text(element: ET.Element, *names: str) -> str:
+    child = first_child(element, *names)
+    if child is None:
+        return ""
+    return "".join(child.itertext())
+
+
+def extract_feed_link(entry: ET.Element) -> str:
+    for child in list(entry):
+        if local_name(child.tag) != "link":
+            continue
+
+        href = child.attrib.get("href", "").strip()
+        rel = child.attrib.get("rel", "alternate")
+        if href and rel in {"alternate", ""}:
+            return href
+
+        text = clean_text("".join(child.itertext()))
+        if text:
+            return text
+
+    return clean_text(first_child_text(entry, "guid", "id"))
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(value or "")).strip()
+
+
+def clean_summary(value: str, max_length: int = 220) -> str:
+    text = re.sub(r"<[^>]+>", " ", html.unescape(value or ""))
+    text = clean_text(text)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def parse_feed_timestamp(value: str) -> int | None:
+    value = clean_text(value)
+    if not value:
+        return None
+
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def dedupe_articles(articles: list[Article]) -> list[Article]:
+    seen: set[str] = set()
+    deduped: list[Article] = []
+
+    for article in articles:
+        key = article_key(article)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(article)
+
+    return deduped
+
+
+def article_key(article: Article) -> str:
+    url = urllib.parse.urldefrag(article.url).url.strip().rstrip("/")
+    if not url:
+        return f"{article.source}:{article.title}".lower()
+    return url.lower()
 
 
 def normalize_hn_url(url: str) -> str:
@@ -348,8 +537,9 @@ def get_json(url: str, config: dict, timeout: int = 15):
     return json.loads(payload)
 
 
-def get_text(url: str, config: dict, timeout: int = 15, accept: str = "text/html") -> str:
-    retries = int(config.get("hacker_news", {}).get("retries", 1))
+def get_text(url: str, config: dict, timeout: int = 15, accept: str = "text/html", retries: int | None = None) -> str:
+    if retries is None:
+        retries = int(config.get("hacker_news", {}).get("retries", 1))
     last_error: Exception | None = None
 
     for attempt in range(1, retries + 1):
@@ -386,7 +576,7 @@ def select_articles(
     limit: int,
     ignore_db: bool,
 ) -> list[Article]:
-    candidates = [article for article in articles if article.score >= int(config["filters"].get("min_score", 0))]
+    candidates = [article for article in articles if passes_min_score(article, config)]
 
     if conn is not None and not ignore_db:
         candidates = [article for article in candidates if not already_sent(conn, article.url)]
@@ -395,17 +585,15 @@ def select_articles(
     weak = [article for article in candidates if article not in strong]
 
     strong.sort(
-        key=lambda article: (
-            keyword_score(article, config["filters"].get("keywords", [])),
-            article.score,
-            article.comments,
-        ),
+        key=lambda article: article_rank(article, config),
         reverse=True,
     )
 
-    selected = strong[:limit]
+    max_per_source = int(config["filters"].get("max_per_source", 3))
+    priority_sources = config["filters"].get("priority_sources", [])
+    selected = take_balanced(strong, limit, max_per_source, priority_sources=priority_sources)
     if len(selected) < limit and config["filters"].get("fill_with_top", True):
-        weak.sort(key=lambda article: (article.score, article.comments), reverse=True)
+        weak.sort(key=lambda article: article_rank(article, config), reverse=True)
         selected.extend(
             Article(
                 source=article.source,
@@ -415,12 +603,108 @@ def select_articles(
                 score=article.score,
                 comments=article.comments,
                 published_at=article.published_at,
+                summary=article.summary,
+                has_score=article.has_score,
                 matched=False,
             )
-            for article in weak[: limit - len(selected)]
+            for article in take_balanced(
+                weak,
+                limit - len(selected),
+                max_per_source,
+                selected,
+                priority_sources=priority_sources,
+            )
         )
 
     return selected[:limit]
+
+
+def passes_min_score(article: Article, config: dict) -> bool:
+    if not article.has_score:
+        return True
+    return article.score >= int(config["filters"].get("min_score", 0))
+
+
+def article_rank(article: Article, config: dict) -> tuple[int, int, int, int]:
+    return (
+        keyword_score(article, config["filters"].get("keywords", [])),
+        article.score,
+        article.comments,
+        article.published_at or 0,
+    )
+
+
+def take_balanced(
+    articles: list[Article],
+    limit: int,
+    max_per_source: int,
+    existing: list[Article] | None = None,
+    priority_sources: list[str] | None = None,
+) -> list[Article]:
+    selected: list[Article] = []
+    source_counts: dict[str, int] = {}
+
+    for article in existing or []:
+        source_counts[article.source] = source_counts.get(article.source, 0) + 1
+
+    if max_per_source <= 0:
+        return articles[:limit]
+
+    priority = priority_sources or []
+    article_keys: set[str] = set()
+
+    for source in priority:
+        for article in articles:
+            if len(selected) >= limit:
+                return selected
+            if article.source != source:
+                continue
+            if source_counts.get(article.source, 0) >= max_per_source:
+                break
+            selected.append(article)
+            source_counts[article.source] = source_counts.get(article.source, 0) + 1
+            article_keys.add(article_key(article))
+            break
+
+    source_order = []
+    for article in articles:
+        if article.source not in source_order:
+            source_order.append(article.source)
+
+    for source in source_order:
+        if len(selected) >= limit:
+            return selected
+        if source in priority or source_counts.get(source, 0) >= max_per_source:
+            continue
+        for article in articles:
+            if article.source != source or article_key(article) in article_keys:
+                continue
+            selected.append(article)
+            source_counts[article.source] = source_counts.get(article.source, 0) + 1
+            article_keys.add(article_key(article))
+            break
+
+    for article in articles:
+        if len(selected) >= limit:
+            break
+        if article_key(article) in article_keys:
+            continue
+        if source_counts.get(article.source, 0) >= max_per_source:
+            continue
+        selected.append(article)
+        source_counts[article.source] = source_counts.get(article.source, 0) + 1
+        article_keys.add(article_key(article))
+
+    if len(selected) < limit:
+        for article in articles:
+            if len(selected) >= limit:
+                break
+            if article_key(article) in article_keys:
+                continue
+            selected.append(article)
+            article_keys.add(article_key(article))
+
+    return selected
 
 
 def render_text(articles: list[Article], config: dict, now: datetime) -> str:
@@ -438,11 +722,12 @@ def render_text(articles: list[Article], config: dict, now: datetime) -> str:
             [
                 f"{index}. [{article.source}{'' if article.matched else ' / 高分补位'}] {article.title}",
                 f"   链接：{article.url}",
-                f"   讨论：{article.discussion_url}",
-                f"   HN：{article.score} points / {article.comments} comments",
+                f"   信息：{article_meta_text(article)}",
                 "",
             ]
         )
+        if article.summary:
+            lines.insert(-1, f"   摘要：{article.summary}")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -456,14 +741,15 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
     else:
         items = []
         for index, article in enumerate(articles, start=1):
+            summary = f"<p>{html.escape(article.summary)}</p>" if article.summary else ""
             items.append(
                 textwrap.dedent(
                     f"""
                     <li>
                       <p><strong>{index}. [{html.escape(article.source)}{'' if article.matched else ' / 高分补位'}] {html.escape(article.title)}</strong></p>
-                      <p><a href="{html.escape(article.url)}">原文链接</a> |
-                         <a href="{html.escape(article.discussion_url)}">HN 讨论</a></p>
-                      <p>{article.score} points / {article.comments} comments</p>
+                      <p><a href="{html.escape(article.url)}">原文链接</a>{discussion_link_html(article)}</p>
+                      <p>{html.escape(article_meta_text(article))}</p>
+                      {summary}
                     </li>
                     """
                 ).strip()
@@ -486,6 +772,21 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
         </html>
         """
     ).strip()
+
+
+def article_meta_text(article: Article) -> str:
+    parts = []
+    if article.has_score:
+        parts.append(f"{article.score} points / {article.comments} comments")
+    if article.published_at:
+        parts.append(datetime.fromtimestamp(article.published_at, timezone.utc).strftime("%Y-%m-%d"))
+    return " / ".join(parts) if parts else "RSS/Atom"
+
+
+def discussion_link_html(article: Article) -> str:
+    if not article.has_score or article.discussion_url == article.url:
+        return ""
+    return f' | <a href="{html.escape(article.discussion_url)}">HN 讨论</a>'
 
 
 def save_preview(config: dict, base_dir: Path, text: str, html_text: str, now: datetime) -> tuple[Path, Path]:
@@ -550,7 +851,7 @@ def main() -> None:
 
     conn = open_db(config, base_dir)
     try:
-        all_articles = fetch_hacker_news(config)
+        all_articles = fetch_all_articles(config)
         selected = select_articles(
             all_articles,
             config=config,

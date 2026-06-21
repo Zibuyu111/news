@@ -1,7 +1,7 @@
 [app]
 title = "技术文章自动汇总"
 timezone = "Asia/Shanghai"
-limit = 10
+limit = 12
 scan_count = 40
 database = "data/news.db"
 output_dir = "out"
@@ -27,6 +27,8 @@ keywords = [
   "distributed",
 ]
 min_score = 20
+max_per_source = 3
+priority_sources = ["Hacker News"]
 
 [hacker_news]
 enabled = true
@@ -34,6 +36,57 @@ api = "algolia"
 list = "topstories"
 timeout = 15
 retries = 2
+
+[feeds]
+enabled = true
+timeout = 8
+retries = 1
+per_feed_limit = 5
+
+[[feeds.sources]]
+name = "Lobsters"
+url = "https://lobste.rs/rss"
+
+[[feeds.sources]]
+name = "Cloudflare Blog"
+url = "https://blog.cloudflare.com/rss/"
+enabled = false
+
+[[feeds.sources]]
+name = "GitHub Blog"
+url = "https://github.blog/feed/"
+
+[[feeds.sources]]
+name = "AWS Open Source"
+url = "https://aws.amazon.com/blogs/opensource/feed/"
+
+[[feeds.sources]]
+name = "OpenAI News"
+url = "https://openai.com/news/rss.xml"
+
+[[feeds.sources]]
+name = "Rust Blog"
+url = "https://blog.rust-lang.org/feed.xml"
+
+[[feeds.sources]]
+name = "Go Blog"
+url = "https://go.dev/blog/feed.atom"
+
+[[feeds.sources]]
+name = "Kubernetes Blog"
+url = "https://kubernetes.io/feed.xml"
+
+[[feeds.sources]]
+name = "Mozilla Hacks"
+url = "https://hacks.mozilla.org/feed/"
+
+[[feeds.sources]]
+name = "Meta Engineering"
+url = "https://engineering.fb.com/feed/"
+
+[[feeds.sources]]
+name = "CNCF Blog"
+url = "https://www.cncf.io/feed/"
 
 [email]
 enabled = false
