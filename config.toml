@@ -1,0 +1,44 @@
+[app]
+title = "技术文章自动汇总"
+timezone = "Asia/Shanghai"
+limit = 10
+scan_count = 40
+database = "data/news.db"
+output_dir = "out"
+
+[filters]
+fill_with_top = true
+keywords = [
+  "ai",
+  "llm",
+  "agent",
+  "python",
+  "linux",
+  "security",
+  "database",
+  "postgres",
+  "rust",
+  "compiler",
+  "cloud",
+  "kubernetes",
+  "open source",
+  "self-hosted",
+  "performance",
+  "distributed",
+]
+min_score = 20
+
+[hacker_news]
+enabled = true
+api = "algolia"
+list = "topstories"
+timeout = 15
+retries = 2
+
+[email]
+enabled = false
+smtp_server = "smtp.qq.com"
+smtp_port = 465
+sender = ""
+receiver = ""
+# Keep SMTP password out of this file. Set it as NEWS_SMTP_PASSWORD.
