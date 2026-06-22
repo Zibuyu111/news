@@ -1,11 +1,11 @@
 # my_news
 
-个人技术文章定时汇总脚本。当前接入 Hacker News 与多个公开 RSS/Atom 技术源，按关键词、热度、时间和来源均衡筛选文章，生成纯文本与 HTML 预览；配置邮箱后可以定时发送邮件。
+个人技术文章定时汇总脚本。当前接入 Hacker News、多个公开 RSS/Atom 技术源，以及 AI HOT 精选。脚本会按关键词、热度、时间和来源均衡筛选主技术文章，并额外生成 AI HOT 独立板块；配置邮箱后可以定时发送邮件。
 
 ## 本地测试
 
 ```bash
-python3 main.py --dry-run --ignore-db --limit 12
+python3 main.py --dry-run --ignore-db --limit 10
 ```
 
 `--dry-run` 只生成预览，不发送邮件，也不写入已发送记录。
@@ -24,6 +24,8 @@ out/
 
 - `app.limit`：每次推送文章数量
 - `app.scan_count`：从 Hacker News 热门列表中扫描多少条
+- `aihot.enabled`：是否启用 AI HOT 独立板块
+- `aihot.limit`：AI HOT 板块展示多少篇，默认 5
 - `filters.fill_with_top`：关键词命中不足时，是否用 HN 高分文章补齐
 - `filters.keywords`：关键词列表
 - `filters.min_score`：最低 HN 分数，仅作用于有分数的来源
@@ -46,6 +48,8 @@ out/
 - Mozilla Hacks
 - Meta Engineering
 - CNCF Blog
+
+AI HOT 通过公开匿名 REST API 接入，默认拉取 `mode = "selected"` 的 5 条精选内容；它不参与关键词筛选，也不写入已发送去重表，作为单独板块展示。
 
 `config.toml` 中还保留了 Cloudflare Blog，当前默认关闭；如果本地网络访问稳定，可以把对应来源的 `enabled = false` 改为 `enabled = true`。
 

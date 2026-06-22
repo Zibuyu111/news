@@ -28,6 +28,12 @@ from zoneinfo import ZoneInfo
 HN_API = "https://hacker-news.firebaseio.com/v0"
 HN_ALGOLIA_API = "https://hn.algolia.com/api/v1"
 HN_WEB = "https://news.ycombinator.com/"
+AIHOT_API = "https://aihot.virxact.com/api/public"
+AIHOT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36 my-news-digest/0.2.0"
+)
 
 
 @dataclass(frozen=True)
@@ -373,6 +379,44 @@ def fetch_feeds(config: dict) -> list[Article]:
     return articles
 
 
+def fetch_aihot(config: dict) -> list[Article]:
+    aihot_config = config.get("aihot", {})
+    if not aihot_config.get("enabled", False):
+        return []
+
+    limit = int(aihot_config.get("limit", 5))
+    mode = str(aihot_config.get("mode", "selected"))
+    timeout = int(aihot_config.get("timeout", 10))
+    params = urllib.parse.urlencode({"mode": mode, "take": limit})
+    payload = get_aihot_json(f"{AIHOT_API}/items?{params}", timeout=timeout)
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise RuntimeError("unexpected AI HOT payload")
+
+    articles: list[Article] = []
+    for item in items[:limit]:
+        title = clean_text(str(item.get("title_en") or item.get("title") or ""))
+        url = str(item.get("url") or item.get("permalink") or "").strip()
+        if not title or not url:
+            continue
+
+        category = clean_text(str(item.get("category") or "")).replace("-", " ")
+        source = "AI HOT" if not category else f"AI HOT / {category}"
+        permalink = str(item.get("permalink") or url).strip()
+
+        articles.append(
+            Article(
+                source=source,
+                title=title,
+                url=url,
+                discussion_url=permalink,
+                published_at=parse_feed_timestamp(str(item.get("publishedAt") or "")),
+            )
+        )
+
+    return articles
+
+
 def parse_feed(feed_text: str, source: str, limit: int) -> list[Article]:
     try:
         root = ET.fromstring(feed_text)
@@ -537,6 +581,22 @@ def as_int(value, default: int = 0) -> int:
 def get_json(url: str, config: dict, timeout: int = 15):
     payload = get_text(url, config=config, timeout=timeout, accept="application/json")
     return json.loads(payload)
+
+
+def get_aihot_json(url: str, timeout: int = 10):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": AIHOT_USER_AGENT,
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return json.loads(response.read().decode(charset))
+    except (TimeoutError, urllib.error.URLError, http.client.RemoteDisconnected, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"request failed: {url}: {exc}") from exc
 
 
 def get_text(url: str, config: dict, timeout: int = 15, accept: str = "text/html", retries: int | None = None) -> str:
@@ -709,16 +769,32 @@ def take_balanced(
     return selected
 
 
-def render_text(articles: list[Article], config: dict, now: datetime) -> str:
+def render_text(
+    articles: list[Article],
+    config: dict,
+    now: datetime,
+    aihot_articles: list[Article] | None = None,
+) -> str:
     lines = [
         f"{config['app'].get('title', 'Tech News Digest')} | {now.strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
 
+    lines.extend(["TECH READS", ""])
     if not articles:
         lines.append("No new articles matched this run.")
-        return "\n".join(lines)
+        lines.append("")
+    else:
+        append_text_articles(lines, articles)
 
+    if aihot_articles:
+        lines.extend(["", "AI HOT", ""])
+        append_text_articles(lines, aihot_articles)
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def append_text_articles(lines: list[str], articles: list[Article]) -> None:
     for index, article in enumerate(articles, start=1):
         lines.extend(
             [
@@ -731,78 +807,36 @@ def render_text(articles: list[Article], config: dict, now: datetime) -> str:
         if article.summary:
             lines.insert(-1, f"   Summary: {article.summary}")
 
-    return "\n".join(lines).rstrip() + "\n"
 
-
-def render_html(articles: list[Article], config: dict, now: datetime) -> str:
+def render_html(
+    articles: list[Article],
+    config: dict,
+    now: datetime,
+    aihot_articles: list[Article] | None = None,
+) -> str:
     title = html.escape(config["app"].get("title", "Tech News Digest"))
     timestamp = html.escape(now.strftime("%Y-%m-%d %H:%M"))
     article_count = len(articles)
+    aihot_count = len(aihot_articles or [])
     if article_count == 1:
         count_text = "1 article"
     elif article_count:
         count_text = f"{article_count} articles"
     else:
         count_text = "No new articles"
+    if aihot_count:
+        count_text = f"{count_text} · {aihot_count} AI HOT"
     font_family = "'Departure Mono', 'Courier New', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"
     font_face_css = pixel_font_face_css()
 
-    if not articles:
-        body = textwrap.dedent(
-            """
-            <tr>
-              <td style="padding: 36px 0 44px; border-top: 1px solid #e5e5e7;">
-                <p style="margin: 0; color: #6e6e73; font-size: 15px; line-height: 1.7;">No new articles matched this run.</p>
-              </td>
-            </tr>
-            """
-        ).strip()
-    else:
-        items = []
-        for index, article in enumerate(articles, start=1):
-            source = html.escape(article.source)
-            source_note = "" if article.matched else " / Top Story"
-            title_text = html.escape(article.title)
-            url = html.escape(article.url, quote=True)
-            meta_text = html.escape(article_meta_text(article))
-            divider = "" if index == 1 else "border-top: 1px solid #e5e5e7;"
-            summary = (
-                textwrap.dedent(
-                    f"""
-                    <p style="margin: 11px 0 0; color: #6e6e73; font-size: 16px; line-height: 1.55; letter-spacing: .01em;">
-                      {html.escape(article.summary)}
-                    </p>
-                    """
-                ).strip()
-                if article.summary
-                else ""
-            )
-            items.append(
-                textwrap.dedent(
-                    f"""
-                    <tr>
-                      <td style="padding: 0; {divider}">
-                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse;">
-                          <tr>
-                            <td style="width: 36px; padding: 22px 0 22px; vertical-align: top; color: #a1a1a6; font-size: 11px; line-height: 1.5; letter-spacing: .06em;">{index}</td>
-                            <td style="padding: 22px 0 22px; vertical-align: top;">
-                              <p style="margin: 0 0 7px; color: #86868b; font-size: 11px; line-height: 1.55; letter-spacing: .08em; text-transform: uppercase;">{source}{source_note} · {meta_text}</p>
-                              <h2 style="margin: 0; color: #1d1d1f; font-size: 22px; line-height: 1.35; font-weight: 400; letter-spacing: .015em;">
-                                {title_text}
-                              </h2>
-                              {summary}
-                              <p style="margin: 12px 0 0; color: #2a4fd6; font-size: 12px; line-height: 1.6; letter-spacing: .08em; text-transform: uppercase;">
-                                <a href="{url}" style="color: #2a4fd6; text-decoration: none;">Read Article</a>{discussion_link_html(article)}
-                              </p>
-                            </td>
-                          </tr>
-                        </table>
-                      </td>
-                    </tr>
-                    """
-                ).strip()
-            )
-        body = "\n".join(items)
+    body = "\n".join(
+        section
+        for section in (
+            render_html_section("TECH READS", articles, empty_text="No new articles matched this run."),
+            render_html_section("AI HOT", aihot_articles or []),
+        )
+        if section
+    )
 
     return textwrap.dedent(
         f"""
@@ -854,6 +888,84 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
     ).strip()
 
 
+def render_html_section(section_title: str, articles: list[Article], empty_text: str = "") -> str:
+    if not articles and not empty_text:
+        return ""
+
+    rows = [section_heading_html(section_title)]
+    if not articles:
+        rows.append(
+            textwrap.dedent(
+                f"""
+                <tr>
+                  <td style="padding: 18px 0 30px; border-top: 1px solid #e5e5e7;">
+                    <p style="margin: 0; color: #6e6e73; font-size: 15px; line-height: 1.7;">{html.escape(empty_text)}</p>
+                  </td>
+                </tr>
+                """
+            ).strip()
+        )
+    else:
+        rows.extend(render_html_article_row(article, index) for index, article in enumerate(articles, start=1))
+
+    return "\n".join(rows)
+
+
+def section_heading_html(section_title: str) -> str:
+    return textwrap.dedent(
+        f"""
+        <tr>
+          <td style="padding: 28px 0 8px; border-top: 1px solid #e5e5e7;">
+            <p style="margin: 0; color: #2a4fd6; font-size: 12px; line-height: 1.5; letter-spacing: .12em; text-transform: uppercase;">{html.escape(section_title)}</p>
+          </td>
+        </tr>
+        """
+    ).strip()
+
+
+def render_html_article_row(article: Article, index: int) -> str:
+    source = html.escape(article.source)
+    source_note = "" if article.matched else " / Top Story"
+    title_text = html.escape(article.title)
+    url = html.escape(article.url, quote=True)
+    meta_text = html.escape(article_meta_text(article))
+    summary = (
+        textwrap.dedent(
+            f"""
+            <p style="margin: 11px 0 0; color: #6e6e73; font-size: 16px; line-height: 1.55; letter-spacing: .01em;">
+              {html.escape(article.summary)}
+            </p>
+            """
+        ).strip()
+        if article.summary
+        else ""
+    )
+
+    return textwrap.dedent(
+        f"""
+        <tr>
+          <td style="padding: 0; border-top: 1px solid #e5e5e7;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse;">
+              <tr>
+                <td style="width: 36px; padding: 22px 0 22px; vertical-align: top; color: #a1a1a6; font-size: 11px; line-height: 1.5; letter-spacing: .06em;">{index}</td>
+                <td style="padding: 22px 0 22px; vertical-align: top;">
+                  <p style="margin: 0 0 7px; color: #86868b; font-size: 11px; line-height: 1.55; letter-spacing: .08em; text-transform: uppercase;">{source}{source_note} · {meta_text}</p>
+                  <h2 style="margin: 0; color: #1d1d1f; font-size: 22px; line-height: 1.35; font-weight: 400; letter-spacing: .015em;">
+                    {title_text}
+                  </h2>
+                  {summary}
+                  <p style="margin: 12px 0 0; color: #2a4fd6; font-size: 12px; line-height: 1.6; letter-spacing: .08em; text-transform: uppercase;">
+                    <a href="{url}" style="color: #2a4fd6; text-decoration: none;">Read Article</a>{discussion_link_html(article)}
+                  </p>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        """
+    ).strip()
+
+
 def pixel_font_face_css() -> str:
     font_path = Path(__file__).resolve().parent / "assets" / "fonts" / "DepartureMono-Regular.woff2"
     if font_path.exists():
@@ -885,6 +997,8 @@ def article_meta_text(article: Article) -> str:
 
 
 def discussion_link_html(article: Article) -> str:
+    if article.source.startswith("AI HOT") and article.discussion_url != article.url:
+        return f' <span style="color: #d2d2d7;">·</span> <a href="{html.escape(article.discussion_url, quote=True)}" style="color: #2a4fd6; text-decoration: none;">AI HOT Page</a>'
     if not article.has_score or article.discussion_url == article.url:
         return ""
     return f' <span style="color: #d2d2d7;">·</span> <a href="{html.escape(article.discussion_url, quote=True)}" style="color: #2a4fd6; text-decoration: none;">HN Discussion</a>'
@@ -961,8 +1075,14 @@ def main() -> None:
             ignore_db=args.ignore_db,
         )
 
-        text = render_text(selected, config, now)
-        html_text = render_html(selected, config, now)
+        try:
+            aihot_articles = fetch_aihot(config)
+        except RuntimeError as exc:
+            print(f"Skip AI HOT: {exc}")
+            aihot_articles = []
+
+        text = render_text(selected, config, now, aihot_articles=aihot_articles)
+        html_text = render_html(selected, config, now, aihot_articles=aihot_articles)
         txt_path, html_path = save_preview(config, base_dir, text, html_text, now)
 
         print(text)

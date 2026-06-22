@@ -1,7 +1,7 @@
 [app]
 title = "Tech News Digest"
 timezone = "Asia/Shanghai"
-limit = 12
+limit = 10
 scan_count = 40
 database = "data/news.db"
 output_dir = "out"
@@ -42,6 +42,12 @@ enabled = true
 timeout = 8
 retries = 1
 per_feed_limit = 5
+
+[aihot]
+enabled = true
+mode = "selected"
+limit = 5
+timeout = 10
 
 [[feeds.sources]]
 name = "Lobsters"
