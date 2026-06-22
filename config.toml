@@ -1,5 +1,5 @@
 [app]
-title = "技术文章自动汇总"
+title = "Tech News Digest"
 timezone = "Asia/Shanghai"
 limit = 12
 scan_count = 40

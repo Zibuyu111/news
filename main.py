@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import http.client
 import html
 import json
 import os
@@ -565,7 +566,7 @@ def request_text_once(url: str, timeout: int = 15, accept: str = "text/html") ->
         with urllib.request.urlopen(request, timeout=timeout) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             return response.read().decode(charset)
-    except (TimeoutError, urllib.error.URLError) as exc:
+    except (TimeoutError, urllib.error.URLError, http.client.RemoteDisconnected) as exc:
         raise RuntimeError(f"request failed: {url}: {exc}") from exc
 
 
@@ -709,65 +710,148 @@ def take_balanced(
 
 def render_text(articles: list[Article], config: dict, now: datetime) -> str:
     lines = [
-        f"{config['app'].get('title', '技术文章自动汇总')} | {now.strftime('%Y-%m-%d %H:%M')}",
+        f"{config['app'].get('title', 'Tech News Digest')} | {now.strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
 
     if not articles:
-        lines.append("本次没有筛选到新的文章。")
+        lines.append("No new articles matched this run.")
         return "\n".join(lines)
 
     for index, article in enumerate(articles, start=1):
         lines.extend(
             [
-                f"{index}. [{article.source}{'' if article.matched else ' / 高分补位'}] {article.title}",
-                f"   链接：{article.url}",
-                f"   信息：{article_meta_text(article)}",
+                f"{index}. [{article.source}{'' if article.matched else ' / Top Story'}] {article.title}",
+                f"   Link: {article.url}",
+                f"   Info: {article_meta_text(article)}",
                 "",
             ]
         )
         if article.summary:
-            lines.insert(-1, f"   摘要：{article.summary}")
+            lines.insert(-1, f"   Summary: {article.summary}")
 
     return "\n".join(lines).rstrip() + "\n"
 
 
 def render_html(articles: list[Article], config: dict, now: datetime) -> str:
-    title = html.escape(config["app"].get("title", "技术文章自动汇总"))
+    title = html.escape(config["app"].get("title", "Tech News Digest"))
     timestamp = html.escape(now.strftime("%Y-%m-%d %H:%M"))
+    article_count = len(articles)
+    if article_count == 1:
+        count_text = "1 article"
+    elif article_count:
+        count_text = f"{article_count} articles"
+    else:
+        count_text = "No new articles"
+    font_family = "'Departure Mono', 'Courier New', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"
 
     if not articles:
-        body = "<p>本次没有筛选到新的文章。</p>"
+        body = textwrap.dedent(
+            """
+            <tr>
+              <td style="padding: 36px 0 44px; border-top: 1px solid #e5e5e7;">
+                <p style="margin: 0; color: #6e6e73; font-size: 15px; line-height: 1.7;">No new articles matched this run.</p>
+              </td>
+            </tr>
+            """
+        ).strip()
     else:
         items = []
         for index, article in enumerate(articles, start=1):
-            summary = f"<p>{html.escape(article.summary)}</p>" if article.summary else ""
+            source = html.escape(article.source)
+            source_note = "" if article.matched else " / Top Story"
+            title_text = html.escape(article.title)
+            url = html.escape(article.url, quote=True)
+            meta_text = html.escape(article_meta_text(article))
+            divider = "" if index == 1 else "border-top: 1px solid #e5e5e7;"
+            summary = (
+                textwrap.dedent(
+                    f"""
+                    <p style="margin: 11px 0 0; color: #6e6e73; font-size: 16px; line-height: 1.55; letter-spacing: .01em;">
+                      {html.escape(article.summary)}
+                    </p>
+                    """
+                ).strip()
+                if article.summary
+                else ""
+            )
             items.append(
                 textwrap.dedent(
                     f"""
-                    <li>
-                      <p><strong>{index}. [{html.escape(article.source)}{'' if article.matched else ' / 高分补位'}] {html.escape(article.title)}</strong></p>
-                      <p><a href="{html.escape(article.url)}">原文链接</a>{discussion_link_html(article)}</p>
-                      <p>{html.escape(article_meta_text(article))}</p>
-                      {summary}
-                    </li>
+                    <tr>
+                      <td style="padding: 0; {divider}">
+                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse;">
+                          <tr>
+                            <td style="width: 36px; padding: 22px 0 22px; vertical-align: top; color: #a1a1a6; font-size: 11px; line-height: 1.5; letter-spacing: .06em;">{index}</td>
+                            <td style="padding: 22px 0 22px; vertical-align: top;">
+                              <p style="margin: 0 0 7px; color: #86868b; font-size: 11px; line-height: 1.55; letter-spacing: .08em; text-transform: uppercase;">{source}{source_note} · {meta_text}</p>
+                              <h2 style="margin: 0; color: #1d1d1f; font-size: 22px; line-height: 1.35; font-weight: 400; letter-spacing: .015em;">
+                                {title_text}
+                              </h2>
+                              {summary}
+                              <p style="margin: 12px 0 0; color: #2a4fd6; font-size: 12px; line-height: 1.6; letter-spacing: .08em; text-transform: uppercase;">
+                                <a href="{url}" style="color: #2a4fd6; text-decoration: none;">Read Article</a>{discussion_link_html(article)}
+                              </p>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
                     """
                 ).strip()
             )
-        body = "<ol>\n" + "\n".join(items) + "\n</ol>"
+        body = "\n".join(items)
 
     return textwrap.dedent(
         f"""
         <!doctype html>
-        <html lang="zh-CN">
+        <html lang="en">
         <head>
           <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            @font-face {{
+              font-family: 'Departure Mono';
+              src: url('../assets/fonts/DepartureMono-Regular.woff2') format('woff2');
+              font-weight: 400;
+              font-style: normal;
+              font-display: swap;
+            }}
+          </style>
           <title>{title}</title>
         </head>
-        <body>
-          <h2>{title}</h2>
-          <p>{timestamp}</p>
-          {body}
+        <body style="margin: 0; padding: 0; background: #f5f5f7; color: #1d1d1f; font-family: {font_family}; font-feature-settings: normal; -webkit-font-smoothing: none; text-rendering: geometricPrecision;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse; background: #f5f5f7;">
+            <tr>
+              <td align="center" style="padding: 40px 16px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: separate; border-spacing: 0; width: 100%; max-width: 680px; background: #ffffff; border-radius: 8px;">
+                  <tr>
+                    <td style="padding: 44px 42px 26px;">
+                      <h1 style="margin: 0; color: #2a4fd6; font-size: 33px; line-height: 1.12; font-weight: 400; letter-spacing: .08em; text-transform: uppercase;">{title}<span style="display: inline-block; width: .55em; height: .9em; margin-left: .45ch; background: #2a4fd6; vertical-align: -.08em;">&nbsp;</span></h1>
+                      <p style="margin: 14px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.7; letter-spacing: .08em; text-transform: uppercase;">{timestamp} · {count_text}</p>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 0 42px 18px;">
+                      <p style="margin: 0; color: #6e6e73; font-size: 16px; line-height: 1.65; letter-spacing: .04em;">A balanced technical reading list filtered by keywords, score, and source.</p>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 0 42px;">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse;">
+                        {body}
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 22px 42px 38px;">
+                      <p style="margin: 0; padding-top: 18px; border-top: 1px solid #e5e5e7; color: #a1a1a6; font-size: 11px; line-height: 1.7; letter-spacing: .08em; text-transform: uppercase;">Generated by my_news.</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
         </body>
         </html>
         """
@@ -786,7 +870,7 @@ def article_meta_text(article: Article) -> str:
 def discussion_link_html(article: Article) -> str:
     if not article.has_score or article.discussion_url == article.url:
         return ""
-    return f' | <a href="{html.escape(article.discussion_url)}">HN 讨论</a>'
+    return f' <span style="color: #d2d2d7;">·</span> <a href="{html.escape(article.discussion_url, quote=True)}" style="color: #2a4fd6; text-decoration: none;">HN Discussion</a>'
 
 
 def save_preview(config: dict, base_dir: Path, text: str, html_text: str, now: datetime) -> tuple[Path, Path]:
@@ -813,7 +897,7 @@ def send_email(config: dict, text: str, html_text: str, now: datetime) -> None:
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
     msg["To"] = receiver
-    msg["Subject"] = f"{config['app'].get('title', '技术文章自动汇总')}-{now.strftime('%Y-%m-%d')}"
+    msg["Subject"] = f"{config['app'].get('title', 'Tech News Digest')}-{now.strftime('%Y-%m-%d')}"
     msg.attach(MIMEText(text, "plain", "utf-8"))
     msg.attach(MIMEText(html_text, "html", "utf-8"))
 
