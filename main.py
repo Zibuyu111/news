@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import http.client
 import html
 import json
@@ -744,6 +745,7 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
     else:
         count_text = "No new articles"
     font_family = "'Departure Mono', 'Courier New', 'SFMono-Regular', 'SF Mono', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace"
+    font_face_css = pixel_font_face_css()
 
     if not articles:
         body = textwrap.dedent(
@@ -810,13 +812,7 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <style>
-            @font-face {{
-              font-family: 'Departure Mono';
-              src: url('../assets/fonts/DepartureMono-Regular.woff2') format('woff2');
-              font-weight: 400;
-              font-style: normal;
-              font-display: swap;
-            }}
+            {font_face_css}
           </style>
           <title>{title}</title>
         </head>
@@ -854,6 +850,27 @@ def render_html(articles: list[Article], config: dict, now: datetime) -> str:
           </table>
         </body>
         </html>
+        """
+    ).strip()
+
+
+def pixel_font_face_css() -> str:
+    font_path = Path(__file__).resolve().parent / "assets" / "fonts" / "DepartureMono-Regular.woff2"
+    if font_path.exists():
+        font_data = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        src = f"url('data:font/woff2;base64,{font_data}') format('woff2')"
+    else:
+        src = "url('../assets/fonts/DepartureMono-Regular.woff2') format('woff2')"
+
+    return textwrap.dedent(
+        f"""
+        @font-face {{
+          font-family: 'Departure Mono';
+          src: {src};
+          font-weight: 400;
+          font-style: normal;
+          font-display: swap;
+        }}
         """
     ).strip()
 
