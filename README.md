@@ -1,6 +1,6 @@
 # my_news
 
-个人技术文章定时汇总脚本。当前接入 Hacker News、多个公开 RSS/Atom 技术源，以及 AI HOT 精选。脚本会按关键词、热度、时间和来源均衡筛选主技术文章，并额外生成 AI HOT 独立板块；配置邮箱后可以定时发送邮件。
+个人阅读文章定时汇总脚本。当前接入 Hacker News、多个公开 RSS/Atom 源，以及 AI HOT 精选。脚本会按主题、热度、时间和来源均衡筛选主列表，并额外生成 AI HOT 独立板块；配置邮箱后可以定时发送邮件。
 
 ## 本地测试
 
@@ -30,26 +30,16 @@ out/
 - `filters.keywords`：关键词列表
 - `filters.min_score`：最低 HN 分数，仅作用于有分数的来源
 - `filters.max_per_source`：单个来源最多入选多少条
+- `topics.groups`：主列表的主题配额和关键词/来源匹配规则
 - `feeds.enabled`：是否启用 RSS/Atom 来源
 - `feeds.sources`：公开 RSS/Atom 来源列表
 - `hacker_news.timeout`：HN API 单次请求超时时间
 - `hacker_news.retries`：HN API 请求失败后的重试次数
 - `email.enabled`：是否启用邮件发送
 
-默认启用的 RSS/Atom 来源包括：
+默认启用的 RSS/Atom 来源包括技术源，以及 Nature、ScienceDaily、Harvard Nutrition Source、Neuroscience News、Psychology Today 等主题源。
 
-- Lobsters
-- GitHub Blog
-- AWS Open Source
-- OpenAI News
-- Rust Blog
-- Go Blog
-- Kubernetes Blog
-- Mozilla Hacks
-- Meta Engineering
-- CNCF Blog
-
-AI HOT 通过公开匿名 REST API 接入，默认拉取 `mode = "selected"` 的 5 条精选内容；它不参与关键词筛选，也不写入已发送去重表，作为单独板块展示。
+AI HOT 通过公开匿名 REST API 接入，默认拉取 `mode = "selected"` 的 5 条精选内容；它不参与主列表筛选，也不写入已发送去重表，作为单独板块展示。
 
 `config.toml` 中还保留了 Cloudflare Blog，当前默认关闭；如果本地网络访问稳定，可以把对应来源的 `enabled = false` 改为 `enabled = true`。
 

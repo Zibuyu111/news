@@ -13,7 +13,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from email.mime.multipart import MIMEMultipart
@@ -619,7 +619,7 @@ def request_text_once(url: str, timeout: int = 15, accept: str = "text/html") ->
     request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "my-news-digest/0.1 (+local personal digest)",
+            "User-Agent": AIHOT_USER_AGENT,
             "Accept": accept,
         },
     )
@@ -642,6 +642,10 @@ def select_articles(
 
     if conn is not None and not ignore_db:
         candidates = [article for article in candidates if not already_sent(conn, article.url)]
+
+    topic_groups = load_topic_groups(config)
+    if topic_groups:
+        return select_topic_articles(candidates, config, limit, topic_groups)
 
     strong = [article for article in candidates if is_relevant(article, config)]
     weak = [article for article in candidates if article not in strong]
@@ -681,6 +685,146 @@ def select_articles(
     return selected[:limit]
 
 
+def load_topic_groups(config: dict) -> list[dict]:
+    topic_config = config.get("topics", {})
+    if not topic_config.get("enabled", False):
+        return []
+
+    groups: list[dict] = []
+    for raw_group in topic_config.get("groups", []):
+        name = clean_text(str(raw_group.get("name", "")))
+        if not name:
+            continue
+
+        quota = as_int(raw_group.get("quota"), 0)
+        if quota <= 0:
+            continue
+
+        keywords = [clean_text(str(keyword)) for keyword in raw_group.get("keywords", [])]
+        keywords = [keyword for keyword in keywords if keyword]
+        sources = [clean_text(str(source)) for source in raw_group.get("sources", [])]
+        sources = [source for source in sources if source]
+
+        groups.append(
+            {
+                "name": name,
+                "quota": quota,
+                "keywords": keywords,
+                "sources": sources,
+            }
+        )
+
+    return groups
+
+
+def topic_group_matches(article: Article, group: dict) -> bool:
+    if article.source in group.get("sources", []):
+        return True
+    return keyword_score(article, group.get("keywords", [])) > 0
+
+
+def topic_group_rank(article: Article, group: dict) -> tuple[int, int, int, int]:
+    source_bonus = 2 if article.source in group.get("sources", []) else 0
+    return (
+        source_bonus + keyword_score(article, group.get("keywords", [])),
+        article.score,
+        article.comments,
+        article.published_at or 0,
+    )
+
+
+def select_topic_articles(
+    articles: list[Article],
+    config: dict,
+    limit: int,
+    topic_groups: list[dict],
+) -> list[Article]:
+    max_per_source = int(config["filters"].get("max_per_source", 3))
+    priority_sources = config["filters"].get("priority_sources", [])
+    fill_with_top = config["filters"].get("fill_with_top", True)
+
+    selected: list[Article] = []
+    selected_keys: set[str] = set()
+
+    topic_matched = [article for article in articles if any(topic_group_matches(article, group) for group in topic_groups)]
+
+    for group in topic_groups:
+        if len(selected) >= limit:
+            break
+
+        group_candidates = [
+            article
+            for article in articles
+            if article_key(article) not in selected_keys and topic_group_matches(article, group)
+        ]
+        if not group_candidates:
+            continue
+
+        group_candidates.sort(key=lambda article: topic_group_rank(article, group), reverse=True)
+        group_selection = take_balanced(
+            group_candidates,
+            min(group["quota"], limit - len(selected)),
+            max_per_source,
+            selected,
+            priority_sources=priority_sources,
+        )
+        for article in group_selection:
+            key = article_key(article)
+            if key in selected_keys:
+                continue
+            selected.append(article)
+            selected_keys.add(key)
+
+    if len(selected) >= limit or not fill_with_top:
+        return selected[:limit]
+
+    matched_remaining = [
+        article
+        for article in topic_matched
+        if article_key(article) not in selected_keys
+    ]
+    if matched_remaining:
+        matched_remaining.sort(key=lambda article: article_rank(article, config), reverse=True)
+        for article in take_balanced(
+            matched_remaining,
+            limit - len(selected),
+            max_per_source,
+            selected,
+            priority_sources=priority_sources,
+        ):
+            key = article_key(article)
+            if key in selected_keys:
+                continue
+            selected.append(article)
+            selected_keys.add(key)
+            if len(selected) >= limit:
+                return selected[:limit]
+
+    remaining = [
+        article
+        for article in articles
+        if article_key(article) not in selected_keys
+    ]
+    if remaining:
+        remaining.sort(key=lambda article: article_rank(article, config), reverse=True)
+        for article in take_balanced(
+            remaining,
+            limit - len(selected),
+            max_per_source,
+            selected,
+            priority_sources=priority_sources,
+        ):
+            key = article_key(article)
+            if key in selected_keys:
+                continue
+            selected.append(replace(article, matched=False))
+            selected_keys.add(key)
+            if len(selected) >= limit:
+                break
+
+    return selected[:limit]
+
+
 def passes_min_score(article: Article, config: dict) -> bool:
     if not article.has_score:
         return True
@@ -688,8 +832,19 @@ def passes_min_score(article: Article, config: dict) -> bool:
 
 
 def article_rank(article: Article, config: dict) -> tuple[int, int, int, int]:
+    topic_groups = load_topic_groups(config)
+    if topic_groups:
+        keyword_hits = 0
+        for group in topic_groups:
+            group_hits = keyword_score(article, group.get("keywords", []))
+            if article.source in group.get("sources", []):
+                group_hits += 2
+            keyword_hits = max(keyword_hits, group_hits)
+    else:
+        keyword_hits = keyword_score(article, config["filters"].get("keywords", []))
+
     return (
-        keyword_score(article, config["filters"].get("keywords", [])),
+        keyword_hits,
         article.score,
         article.comments,
         article.published_at or 0,
@@ -863,7 +1018,7 @@ def render_html(
                   </tr>
                   <tr>
                     <td style="padding: 0 42px 18px;">
-                      <p style="margin: 0; color: #6e6e73; font-size: 16px; line-height: 1.65; letter-spacing: .04em;">A balanced technical reading list filtered by keywords, score, and source.</p>
+                      <p style="margin: 0; color: #6e6e73; font-size: 16px; line-height: 1.65; letter-spacing: .04em;">A balanced reading list filtered by topics, score, and source.</p>
                     </td>
                   </tr>
                   <tr>
@@ -1042,7 +1197,7 @@ def send_email(config: dict, text: str, html_text: str, now: datetime) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Collect technical articles and send a daily digest.")
+    parser = argparse.ArgumentParser(description="Collect articles and send a daily digest.")
     parser.add_argument("--config", default="config.toml", help="Path to config.toml")
     parser.add_argument("--dry-run", action="store_true", help="Generate preview only; do not send email or mark sent")
     parser.add_argument("--ignore-db", action="store_true", help="Ignore dedupe database when selecting articles")

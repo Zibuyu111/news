@@ -49,6 +49,97 @@ mode = "selected"
 limit = 5
 timeout = 10
 
+[topics]
+enabled = true
+fill_with_top = true
+
+[[topics.groups]]
+name = "computer"
+quota = 4
+sources = [
+  "Hacker News",
+  "Lobsters",
+  "GitHub Blog",
+  "AWS Open Source",
+  "OpenAI News",
+  "Rust Blog",
+  "Go Blog",
+  "Kubernetes Blog",
+  "Mozilla Hacks",
+  "Meta Engineering",
+  "CNCF Blog",
+]
+keywords = [
+  "ai",
+  "llm",
+  "agent",
+  "python",
+  "linux",
+  "security",
+  "database",
+  "postgres",
+  "rust",
+  "compiler",
+  "cloud",
+  "kubernetes",
+  "open source",
+  "self-hosted",
+  "performance",
+  "distributed",
+]
+
+[[topics.groups]]
+name = "neuroscience"
+quota = 2
+sources = [
+  "ScienceDaily / Neuroscience",
+  "Neuroscience News",
+  "Nature / Neuroscience",
+  "Nature / Cognitive Neuroscience",
+]
+keywords = [
+  "neuroscience",
+  "brain",
+  "cognitive",
+  "neural",
+  "memory",
+  "synapse",
+]
+
+[[topics.groups]]
+name = "diet"
+quota = 2
+sources = [
+  "ScienceDaily / Nutrition",
+  "Harvard Nutrition Source",
+  "Nature / Nutrition",
+]
+keywords = [
+  "nutrition",
+  "diet",
+  "food",
+  "weight",
+  "obesity",
+  "metabolism",
+]
+
+[[topics.groups]]
+name = "psychology"
+quota = 2
+sources = [
+  "ScienceDaily / Psychology",
+  "Psychology Today / Brain Myths",
+  "Nature / Psychology",
+]
+keywords = [
+  "psychology",
+  "behavior",
+  "mental",
+  "emotion",
+  "cognitive",
+  "social",
+]
+
 [[feeds.sources]]
 name = "Lobsters"
 url = "https://lobste.rs/rss"
@@ -93,6 +184,42 @@ url = "https://engineering.fb.com/feed/"
 [[feeds.sources]]
 name = "CNCF Blog"
 url = "https://www.cncf.io/feed/"
+
+[[feeds.sources]]
+name = "Nature / Neuroscience"
+url = "https://www.nature.com/subjects/neuroscience.rss"
+
+[[feeds.sources]]
+name = "Nature / Psychology"
+url = "https://www.nature.com/subjects/psychology.rss"
+
+[[feeds.sources]]
+name = "Nature / Nutrition"
+url = "https://www.nature.com/subjects/nutrition.rss"
+
+[[feeds.sources]]
+name = "Harvard Nutrition Source"
+url = "https://www.hsph.harvard.edu/nutritionsource/feed/"
+
+[[feeds.sources]]
+name = "ScienceDaily / Neuroscience"
+url = "https://www.sciencedaily.com/rss/mind_brain/neuroscience.xml"
+
+[[feeds.sources]]
+name = "ScienceDaily / Psychology"
+url = "https://www.sciencedaily.com/rss/mind_brain/psychology.xml"
+
+[[feeds.sources]]
+name = "ScienceDaily / Nutrition"
+url = "https://www.sciencedaily.com/rss/health_medicine/nutrition.xml"
+
+[[feeds.sources]]
+name = "Neuroscience News"
+url = "https://www.neurosciencenews.com/feed/"
+
+[[feeds.sources]]
+name = "Psychology Today / Brain Myths"
+url = "https://www.psychologytoday.com/us/blog/brain-myths/feed"
 
 [email]
 enabled = false
